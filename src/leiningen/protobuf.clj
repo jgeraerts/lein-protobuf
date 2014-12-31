@@ -12,6 +12,14 @@
 (def cache (io/file (leiningen-home) "cache" "lein-protobuf"))
 (def default-version "2.5.0")
 
+(defn windows? []
+  (.startsWith (System/getProperty "os.name") "Windows"))
+
+(defn protoc-executable []
+  (if (windows?)
+    "protoc.exe"
+    "protoc"))
+
 (defn version [project]
   (or (:protobuf-version project) default-version))
 
@@ -22,7 +30,13 @@
   (io/file cache (str "protobuf-" (version project))))
 
 (defn protoc [project]
-  (io/file (srcdir project) "src" "protoc"))
+  (let [protoc-exe (protoc-executable)
+        protoc-home (System/getenv "PROTOC_HOME")
+        protoc-file (io/file protoc-home protoc-exe)]
+    (if (.exists protoc-file)
+      protoc-file      
+      (io/file (srcdir project) "src" protoc-exe))))
+
 
 (defn url [project]
   (java.net.URL.
@@ -41,25 +55,25 @@
   "Extract all files proto depends on into dest."
   [project proto-path protos dest]
   (in-project (dissoc project :prep-tasks)
-    [proto-path (.getPath proto-path)
-     dest (.getPath dest)
-     protos protos]
-    (ns (:require [clojure.java.io :as io]))
-    (letfn [(dependencies [proto-file]
-              (when (.exists proto-file)
-                (for [line (line-seq (io/reader proto-file))
-                      :when (.startsWith line "import")]
-                  (second (re-matches #".*\"(.*)\".*" line)))))]
-      (loop [deps (mapcat #(dependencies (io/file proto-path %)) protos)]
-        (when-let [[dep & deps] (seq deps)]
-          (let [proto-file (io/file dest dep)]
-            (if (or (.exists (io/file proto-path dep))
-                    (.exists proto-file))
-              (recur deps)
-              (do (.mkdirs (.getParentFile proto-file))
-                  (when-let [resource (io/resource (str "proto/" dep))]
-                    (io/copy (io/reader resource) proto-file))
-                  (recur (concat deps (dependencies proto-file)))))))))))
+              [proto-path (.getPath proto-path)
+               dest (.getPath dest)
+               protos protos]
+              (ns (:require [clojure.java.io :as io]))
+              (letfn [(dependencies [proto-file]
+                        (when (.exists proto-file)
+                          (for [line (line-seq (io/reader proto-file))
+                                :when (.startsWith line "import")]
+                            (second (re-matches #".*\"(.*)\".*" line)))))]
+                (loop [deps (mapcat #(dependencies (io/file proto-path %)) protos)]
+                  (when-let [[dep & deps] (seq deps)]
+                    (let [proto-file (io/file dest dep)]
+                      (if (or (.exists (io/file proto-path dep))
+                              (.exists proto-file))
+                        (recur deps)
+                        (do (.mkdirs (.getParentFile proto-file))
+                            (when-let [resource (io/resource (str "proto/" dep))]
+                              (io/copy (io/reader resource) proto-file))
+                            (recur (concat deps (dependencies proto-file)))))))))))
 
 (defn modtime [f]
   (let [files (if (fs/directory? f)
@@ -109,29 +123,29 @@
 (defn compile-protobuf
   "Create .java and .class files from the provided .proto files."
   ([project protos]
-     (compile-protobuf project protos (io/file (target project) "protosrc")))
+   (compile-protobuf project protos (io/file (target project) "protosrc")))
   ([project protos dest]
-     (let [target     (target project)
-           class-dest (io/file target "classes")
-           proto-dest (io/file target "proto")
-           proto-path (proto-path project)]
-       (when (or (> (modtime proto-path) (modtime dest))
-                 (> (modtime proto-path) (modtime class-dest)))
-         (binding [*compile-protobuf?* false]
-           (.mkdirs dest)
-           (extract-dependencies project proto-path protos proto-dest)
-           (doseq [proto protos]
-             (let [args (into [(.getPath (protoc project)) proto
-                               (str "--java_out=" (.getAbsoluteFile dest)) "-I."]
-                              (map #(str "-I" (.getAbsoluteFile %))
-                                   [proto-dest proto-path]))]
-               (println " > " (join " " args))
-               (let [result (apply sh/proc (concat args [:dir proto-path]))]
-                 (when-not (= (sh/exit-code result) 0)
-                   (abort "ERROR:" (sh/stream-to-string result :err))))))
-           (javac (assoc project
-                    :java-source-paths [(.getPath dest)]
-                    :javac-options ["-Xlint:none"])))))))
+   (let [target     (target project)
+         class-dest (io/file target "classes")
+         proto-dest (io/file target "proto")
+         proto-path (proto-path project)]
+     (when (or (> (modtime proto-path) (modtime dest))
+               (> (modtime proto-path) (modtime class-dest)))
+       (binding [*compile-protobuf?* false]
+         (.mkdirs dest)
+         (extract-dependencies project proto-path protos proto-dest)
+         (doseq [proto protos]
+           (let [args (into [(.getPath (protoc project)) proto
+                             (str "--java_out=" (.getAbsoluteFile dest)) "-I."]
+                            (map #(str "-I" (.getAbsoluteFile %))
+                                 [proto-dest proto-path]))]
+             (println " > " (join " " args))
+             (let [result (apply sh/proc (concat args [:dir proto-path]))]
+               (when-not (= (sh/exit-code result) 0)
+                 (abort "ERROR:" (sh/stream-to-string result :err))))))
+         (javac (assoc project
+                  :java-source-paths [(.getPath dest)]
+                  :javac-options ["-Xlint:none"])))))))
 
 (defn compile-google-protobuf
   "Compile com.google.protobuf.*"
